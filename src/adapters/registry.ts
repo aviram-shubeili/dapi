@@ -6,6 +6,7 @@ import { PythonAdapter } from "./python.js";
 import { NodeAdapter } from "./node.js";
 import { GoAdapter } from "./go.js";
 import { RustAdapter } from "./rust.js";
+import { DotnetAdapter } from "./dotnet.js";
 
 const EXTENSION_MAP: Record<string, string> = {
   ".py": "python",
@@ -20,6 +21,8 @@ const EXTENSION_MAP: Record<string, string> = {
   ".c": "rust",
   ".cpp": "rust",
   ".cc": "rust",
+  ".cs": "dotnet",
+  ".dll": "dotnet",
 };
 
 const adapters: Record<string, () => AdapterConfig> = {
@@ -27,6 +30,7 @@ const adapters: Record<string, () => AdapterConfig> = {
   node: () => new NodeAdapter(),
   go: () => new GoAdapter(),
   rust: () => new RustAdapter(),
+  dotnet: () => new DotnetAdapter(),
 };
 
 /** Detect language from file extension. */

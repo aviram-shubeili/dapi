@@ -26,6 +26,7 @@ export interface InitFlowOpts extends LaunchOpts {
 export interface AttachFlowOpts {
   host: string;
   port: number;
+  pid?: number;
   runtimePath?: string;
   breakpoints?: Array<{ file: string; lines: number[]; conditions?: Array<string | null> }>;
   exceptionFilters?: string[];
@@ -47,6 +48,8 @@ export interface AdapterConfig {
   initFlow(client: DAPClient, opts: InitFlowOpts): Promise<CommandResult>;
   inject?(pid: number, runtimePath?: string): Promise<InjectResult>;
   attachFlow?(client: DAPClient, opts: AttachFlowOpts): Promise<CommandResult>;
+  /** Spawn the debug adapter for attach mode (e.g., vsdbg via stdio). */
+  spawnForAttach?(pid: number, opts?: { runtimePath?: string }): Promise<{ process: ChildProcess; port?: number; useStdio?: boolean }>;
   isInternalFrame(frame: StackFrame): boolean;
   isInternalVariable(v: Variable): boolean;
 }

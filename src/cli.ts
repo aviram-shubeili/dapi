@@ -3,10 +3,10 @@
 
 import { connect, type Socket } from "node:net";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, openSync } from "node:fs";
 import { resolve as pathResolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { socketPath, pidFile } from "./util/paths.js";
+import { socketPath, pidFile, portFile, USE_TCP } from "./util/paths.js";
 import { formatResult } from "./format.js";
 import type { CommandResult } from "./protocol.js";
 
@@ -35,17 +35,23 @@ function ensureDaemon(session: string): Promise<void> {
   const daemonScript = isCompiled
     ? pathResolve(__dirname, "daemon.js")
     : pathResolve(__dirname, "daemon.ts");
+
+  // Use process.execPath to spawn the daemon with the same runtime that started the CLI.
+  // On Windows, redirect to NUL explicitly — Bun's detached spawn doesn't work with stdio: "ignore".
+  const nullDev = process.platform === "win32" ? openSync("NUL", "w") : "ignore" as const;
+  const stdioOpts: ["ignore", typeof nullDev, typeof nullDev] = ["ignore", nullDev, nullDev];
   const child = isCompiled
-    ? spawn("node", [daemonScript, session], { stdio: "ignore", detached: true })
-    : spawn("bun", ["run", daemonScript, session], { stdio: "ignore", detached: true });
+    ? spawn(process.execPath, [daemonScript, session], { stdio: stdioOpts, detached: true })
+    : spawn(process.execPath, ["run", daemonScript, session], { stdio: stdioOpts, detached: true });
   child.unref();
 
   return new Promise((resolve, reject) => {
     let attempts = 0;
-    const sock = socketPath(session);
     const check = () => {
-      if (existsSync(sock)) { resolve(); return; }
-      if (++attempts > 30) { reject(new Error(`Daemon failed to start (session: ${session})`)); return; }
+      // On Windows, check for port file (TCP); on Unix, check for socket file
+      const readyFile = USE_TCP ? portFile(session) : socketPath(session);
+      if (existsSync(readyFile)) { resolve(); return; }
+      if (++attempts > 50) { reject(new Error(`Daemon failed to start (session: ${session})`)); return; }
       setTimeout(check, 100);
     };
     check();
@@ -56,7 +62,14 @@ function sendCommand(cmd: Record<string, unknown>, session: string): Promise<Com
   return new Promise(async (resolve, reject) => {
     try { await ensureDaemon(session); } catch (err) { reject(err); return; }
 
-    const sock: Socket = connect(socketPath(session));
+    // On Windows, connect via TCP to the port in the port file; on Unix, use socket file
+    let sock: Socket;
+    if (USE_TCP) {
+      const port = parseInt(readFileSync(portFile(session), "utf-8").trim(), 10);
+      sock = connect(port, "127.0.0.1");
+    } else {
+      sock = connect(socketPath(session));
+    }
     let data = "";
 
     sock.on("connect", () => { sock.write(JSON.stringify(cmd) + "\n"); });
@@ -67,7 +80,7 @@ function sendCommand(cmd: Record<string, unknown>, session: string): Promise<Com
     });
     sock.on("error", (err) => {
       if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
-        for (const p of [pidFile(session), socketPath(session)]) {
+        for (const p of [pidFile(session), socketPath(session), portFile(session)]) {
           try { if (existsSync(p)) unlinkSync(p); } catch { /* ignore */ }
         }
         resolve({ error: "Daemon not running. Try again." });

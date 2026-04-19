@@ -12,16 +12,18 @@ export type SessionState = "idle" | "starting" | "running" | "paused" | "termina
 
 // ---- Pure utilities (exported for testing) ----
 
-/** Parse "file:line" or "file:line:condition" breakpoint strings, grouped by file. */
+/** Parse "file:line" or "file:line:condition" breakpoint strings, grouped by file.
+ *  Handles Windows drive-letter paths (e.g., D:\path\file.cs:42:condition). */
 export function parseBreakpoints(raw: string[]): Array<{ file: string; lines: number[]; conditions: Array<string | null> }> {
   const byFile = new Map<string, { lines: number[]; conditions: Array<string | null> }>();
   for (const bp of raw) {
-    const parts = bp.split(":");
-    if (parts.length < 2) continue;
-    const file = pathResolve(parts[0]!);
-    const line = parseInt(parts[1]!, 10);
+    // Use regex to correctly handle Windows drive-letter paths
+    const match = bp.match(/^(.+?):(\d+)(?::(.+))?$/);
+    if (!match) continue;
+    const file = pathResolve(match[1]!);
+    const line = parseInt(match[2]!, 10);
     if (isNaN(line)) continue;
-    const condition = parts.length > 2 ? parts.slice(2).join(":") : null;
+    const condition = match[3] ?? null;
     let entry = byFile.get(file);
     if (!entry) { entry = { lines: [], conditions: [] }; byFile.set(file, entry); }
     entry.lines.push(line);
@@ -95,7 +97,7 @@ export class Session {
     this.adapter = cmd.language ? getAdapter(cmd.language) : getAdapterForFile(script);
     if (!this.adapter) {
       this.state = "idle";
-      return { error: `Unsupported file type: ${script}. Supported: .py .js .ts .go .rs .c .cpp` };
+      return { error: `Unsupported file type: ${script}. Supported: .py .js .ts .go .rs .c .cpp .cs` };
     }
 
     const installErr = await this.adapter.checkInstalled(cmd.runtime);
@@ -160,7 +162,23 @@ export class Session {
     let host = cmd.host ?? "127.0.0.1";
     let port = cmd.port;
 
-    if (cmd.pid) {
+    // Adapters that spawn their own debug adapter (e.g., vsdbg via stdio)
+    if (cmd.pid && this.adapter.spawnForAttach) {
+      try {
+        const spawnResult = await this.adapter.spawnForAttach(cmd.pid, { runtimePath: cmd.runtime });
+        this.adapterProcess = spawnResult.process;
+        this.client = new DAPClient();
+        if (spawnResult.useStdio) {
+          this.client.connectStdio(spawnResult.process);
+        } else {
+          await this.client.connect("127.0.0.1", spawnResult.port!);
+        }
+      } catch (err) {
+        this.state = "idle";
+        return { error: `Failed to spawn debug adapter: ${(err as Error).message}` };
+      }
+    } else if (cmd.pid) {
+      // Legacy inject flow (e.g., debugpy injection via lldb/gdb)
       if (!this.adapter.inject) { this.state = "idle"; return { error: `PID injection not supported for ${this.adapter.name}` }; }
       try {
         const injectResult = await this.adapter.inject(cmd.pid, cmd.runtime);
@@ -172,19 +190,23 @@ export class Session {
       }
     }
 
-    try {
-      this.client = new DAPClient();
-      await this.client.connect(host, port!);
-    } catch (err) {
-      this.state = "idle";
-      this.client = null;
-      return { error: `Failed to connect to ${host}:${port}: ${(err as Error).message}` };
+    // For non-spawnForAttach paths, connect via TCP
+    if (!this.client) {
+      try {
+        this.client = new DAPClient();
+        await this.client.connect(host, port!);
+      } catch (err) {
+        this.state = "idle";
+        this.client = null;
+        return { error: `Failed to connect to ${host}:${port}: ${(err as Error).message}` };
+      }
     }
 
     const breakpoints = parseBreakpoints(cmd.breakpoints ?? []);
     const result = await this.adapter.attachFlow(this.client, {
       host,
       port: port!,
+      pid: cmd.pid,
       runtimePath: cmd.runtime,
       breakpoints,
       exceptionFilters: cmd.exceptionFilters,

@@ -1,7 +1,8 @@
-/** DAP (Debug Adapter Protocol) client over TCP.*/
+/** DAP (Debug Adapter Protocol) client over TCP or stdio.*/
 
 import { Socket } from "node:net";
 import { EventEmitter } from "node:events";
+import type { ChildProcess } from "node:child_process";
 import type { DAPResponse, DAPEvent } from "./dap-types.js";
 
 interface PendingRequest {
@@ -12,6 +13,8 @@ interface PendingRequest {
 
 export class DAPClient extends EventEmitter {
   private sock: Socket | null = null;
+  private stdioProc: ChildProcess | null = null;
+  private isStdio = false;
   private seq = 0;
   private pending = new Map<number, PendingRequest>();
   /** Deferred promises for requestAsync — survives dispatch resolution. */
@@ -62,32 +65,59 @@ export class DAPClient extends EventEmitter {
     });
   }
 
+  /** Connect to a DAP server via child process stdio (stdin/stdout). */
+  connectStdio(proc: ChildProcess): void {
+    if (!proc.stdout || !proc.stdin) {
+      throw new Error("Process must have piped stdio (stdin/stdout)");
+    }
+
+    this.stdioProc = proc;
+    this.isStdio = true;
+
+    proc.stdout.on("data", (chunk) => {
+      const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf-8") : Buffer.from(chunk as Uint8Array);
+      this.buffer = Buffer.concat([this.buffer, buf]);
+      this.processBuffer();
+    });
+
+    // Capture stderr for diagnostics but don't treat as DAP messages
+    proc.stderr?.on("data", () => { /* vsdbg logs to stderr — ignore */ });
+
+    proc.on("exit", () => {
+      this.rejectAllPending("Process exited");
+    });
+  }
+
   private setupSocket(): void {
     if (!this.sock) return;
 
     this.sock.on("data", (chunk) => {
-      this.buffer = Buffer.concat([this.buffer, chunk]);
+      const buf = typeof chunk === "string" ? Buffer.from(chunk, "utf-8") : Buffer.from(chunk as Uint8Array);
+      this.buffer = Buffer.concat([this.buffer, buf]);
       this.processBuffer();
     });
 
     this.sock.on("close", () => {
-      for (const [seq, pending] of this.pending) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error("Connection closed"));
-        this.pending.delete(seq);
-      }
-      // Also reject any async deferred that hasn't resolved
-      for (const [seq, deferred] of this.asyncResponses) {
-        if (!deferred.settled) {
-          deferred.reject(new Error("Connection closed"));
-        }
-        this.asyncResponses.delete(seq);
-      }
+      this.rejectAllPending("Connection closed");
     });
 
     this.sock.on("error", () => {
       // Handled by close
     });
+  }
+
+  private rejectAllPending(reason: string): void {
+    for (const [seq, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+      this.pending.delete(seq);
+    }
+    for (const [seq, deferred] of this.asyncResponses) {
+      if (!deferred.settled) {
+        deferred.reject(new Error(reason));
+      }
+      this.asyncResponses.delete(seq);
+    }
   }
 
   private processBuffer(): void {
@@ -140,14 +170,67 @@ export class DAPClient extends EventEmitter {
       this.eventQueue.push(evt);
       this.emit("event", evt);
       this.emit(`event:${evt.event}`, evt);
+    } else if (msg.type === "request") {
+      // Handle reverse requests from the adapter (e.g., vsdbg handshake)
+      this.handleReverseRequest(msg as unknown as { seq: number; command: string; arguments?: Record<string, unknown> });
+    }
+  }
+
+  /** Handle incoming requests from the debug adapter (reverse requests). */
+  private handleReverseRequest(req: { seq: number; command: string; arguments?: Record<string, unknown> }): void {
+    if (req.command === "handshake") {
+      // vsdbg handshake: respond with success, then echo the value back as our own request
+      this.send({
+        seq: ++this.seq,
+        type: "response",
+        request_seq: req.seq,
+        success: true,
+        command: "handshake",
+      });
+      const value = (req.arguments as { value?: string } | undefined)?.value;
+      if (value) {
+        this.send({
+          seq: ++this.seq,
+          type: "request",
+          command: "handshake",
+          arguments: { value },
+        });
+      }
+    } else if (req.command === "runInTerminal") {
+      // Reject gracefully — dapi is headless
+      this.send({
+        seq: ++this.seq,
+        type: "response",
+        request_seq: req.seq,
+        success: false,
+        command: "runInTerminal",
+        message: "runInTerminal not supported in headless mode",
+      });
+    } else {
+      // Unknown reverse request — respond with failure
+      this.send({
+        seq: ++this.seq,
+        type: "response",
+        request_seq: req.seq,
+        success: false,
+        command: req.command,
+        message: `Reverse request '${req.command}' not supported`,
+      });
     }
   }
 
   private send(msg: Record<string, unknown>): void {
-    if (!this.sock) throw new Error("Not connected");
     const body = Buffer.from(JSON.stringify(msg), "utf-8");
     const header = Buffer.from(`Content-Length: ${body.length}\r\n\r\n`, "ascii");
-    this.sock.write(Buffer.concat([header, body]));
+    const data = Buffer.concat([header, body]);
+
+    if (this.isStdio) {
+      if (!this.stdioProc?.stdin?.writable) throw new Error("Not connected (stdio)");
+      this.stdioProc.stdin.write(data);
+    } else {
+      if (!this.sock) throw new Error("Not connected");
+      this.sock.write(data);
+    }
   }
 
   /** Send a request and wait for the response. */
@@ -254,6 +337,10 @@ export class DAPClient extends EventEmitter {
     } catch {
       // Best effort
     } finally {
+      if (this.isStdio && this.stdioProc) {
+        try { this.stdioProc.stdin?.end(); } catch { /* best effort */ }
+        this.stdioProc = null;
+      }
       if (this.sock) {
         this.sock.destroy();
         this.sock = null;
