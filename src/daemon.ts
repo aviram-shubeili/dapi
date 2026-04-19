@@ -7,9 +7,23 @@
 
 import { createServer, type Server, type Socket } from "node:net";
 import { mkdirSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import { execSync } from "node:child_process";
 import { BASE_DIR, socketPath, pidFile, portFile, USE_TCP } from "./util/paths.js";
 import { Session } from "./session.js";
 import { Command } from "./protocol.js";
+
+/** Check if daemon is running with admin/elevated privileges (Windows). */
+function isDaemonAdmin(): boolean {
+  if (process.platform !== "win32") return true;
+  try {
+    execSync("fsutil dirty query %systemdrive%", { stdio: "ignore", timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const IS_ADMIN = isDaemonAdmin();
 
 const sessionName = process.argv[2] ?? "default";
 const SOCKET_PATH = socketPath(sessionName);
@@ -88,6 +102,12 @@ class Daemon {
 
   private async processCommand(rawCmd: Record<string, unknown>, conn: Socket): Promise<void> {
     try {
+      // Built-in daemon meta-command: check admin status (not part of session protocol)
+      if (rawCmd.action === "admin") {
+        this.sendResponse(conn, { admin: IS_ADMIN });
+        return;
+      }
+
       const parsed = Command.safeParse(rawCmd);
       if (!parsed.success) {
         this.sendResponse(conn, { error: `Invalid command: ${parsed.error.message}` });

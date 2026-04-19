@@ -2,13 +2,24 @@
 /** CLI entry point — thin stateless client that talks to the daemon. */
 
 import { connect, type Socket } from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, openSync } from "node:fs";
 import { resolve as pathResolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { socketPath, pidFile, portFile, USE_TCP } from "./util/paths.js";
 import { formatResult } from "./format.js";
 import type { CommandResult } from "./protocol.js";
+
+/** Check if the current process is running with admin/elevated privileges (Windows). */
+function isAdmin(): boolean {
+  if (process.platform !== "win32") return true; // Unix: rely on normal permission model
+  try {
+    execSync("fsutil dirty query %systemdrive%", { stdio: "ignore", timeout: 3000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -58,9 +69,56 @@ function ensureDaemon(session: string): Promise<void> {
   });
 }
 
+/** Send a one-shot query to the daemon and return the parsed response. */
+function queryDaemon(cmd: Record<string, unknown>, session: string): Promise<Record<string, unknown>> {
+  return new Promise(async (resolve, reject) => {
+    let sock: Socket;
+    if (USE_TCP) {
+      const port = parseInt(readFileSync(portFile(session), "utf-8").trim(), 10);
+      sock = connect(port, "127.0.0.1");
+    } else {
+      sock = connect(socketPath(session));
+    }
+    let data = "";
+    sock.on("connect", () => { sock.write(JSON.stringify(cmd) + "\n"); });
+    sock.on("data", (chunk) => { data += chunk.toString(); });
+    sock.on("end", () => { try { resolve(JSON.parse(data.trim())); } catch { reject(new Error("Bad response")); } });
+    sock.on("error", (err) => { reject(err); });
+  });
+}
+
+/** Kill the daemon process and clean up its files. */
+function killDaemon(session: string): void {
+  const pf = pidFile(session);
+  if (existsSync(pf)) {
+    try {
+      const pid = parseInt(readFileSync(pf, "utf-8").trim(), 10);
+      process.kill(pid, "SIGTERM");
+    } catch { /* already dead */ }
+  }
+  for (const p of [pf, socketPath(session), portFile(session)]) {
+    try { if (existsSync(p)) unlinkSync(p); } catch { /* ignore */ }
+  }
+}
+
 function sendCommand(cmd: Record<string, unknown>, session: string): Promise<CommandResult> {
   return new Promise(async (resolve, reject) => {
     try { await ensureDaemon(session); } catch (err) { reject(err); return; }
+
+    // If this is an attach-by-pid command, verify the daemon has matching privileges.
+    // If the daemon is non-admin but we're admin, kill it and restart so vsdbg inherits admin.
+    if (cmd.action === "attach" && cmd.pid && isAdmin()) {
+      try {
+        const daemonStatus = await queryDaemon({ action: "admin" }, session);
+        if (daemonStatus && !daemonStatus.admin) {
+          // Kill the non-admin daemon and restart it from this (admin) process
+          killDaemon(session);
+          await ensureDaemon(session);
+        }
+      } catch {
+        // If query fails, proceed anyway — attach will fail with a clear error if privileges are wrong
+      }
+    }
 
     // On Windows, connect via TCP to the port in the port file; on Unix, use socket file
     let sock: Socket;
@@ -73,10 +131,22 @@ function sendCommand(cmd: Record<string, unknown>, session: string): Promise<Com
     let data = "";
 
     sock.on("connect", () => { sock.write(JSON.stringify(cmd) + "\n"); });
-    sock.on("data", (chunk) => { data += chunk.toString(); });
+    sock.on("data", (chunk) => {
+      data += chunk.toString();
+      // Parse as soon as we see a newline — don't wait for socket `end` which may not fire in Bun
+      const nlIdx = data.indexOf("\n");
+      if (nlIdx !== -1) {
+        const line = data.substring(0, nlIdx).trim();
+        sock.destroy();
+        try { resolve(JSON.parse(line)); }
+        catch { resolve({ error: "Invalid response from daemon" }); }
+      }
+    });
     sock.on("end", () => {
-      try { resolve(JSON.parse(data.trim())); }
-      catch { resolve({ error: "Invalid response from daemon" }); }
+      if (data.trim()) {
+        try { resolve(JSON.parse(data.trim())); }
+        catch { resolve({ error: "Invalid response from daemon" }); }
+      }
     });
     sock.on("error", (err) => {
       if ((err as NodeJS.ErrnoException).code === "ECONNREFUSED") {
@@ -215,6 +285,16 @@ async function main(): Promise<void> {
 
       if (!port && !pid) {
         process.stderr.write("Error: provide a port or --pid\n"); process.exit(1);
+      }
+
+      // Attaching to a process requires admin privileges on Windows (SeDebugPrivilege).
+      // Fail fast with a clear message — same behavior as Visual Studio 2022.
+      if (pid && !isAdmin()) {
+        process.stderr.write(
+          "Error: Attaching to a process requires Administrator privileges.\n" +
+          "Right-click your terminal and select \"Run as Administrator\", then try again.\n"
+        );
+        process.exit(1);
       }
 
       const attachCmd: Record<string, unknown> = { action: "attach", breakpoints };
