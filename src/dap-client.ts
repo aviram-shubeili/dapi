@@ -146,7 +146,7 @@ export class DAPClient extends EventEmitter {
     }
   }
 
-  private dispatch(msg: { type: string; [key: string]: unknown }): void {
+  private dispatch(msg: { type: string;[key: string]: unknown }): void {
     if (msg.type === "response") {
       const resp = msg as unknown as DAPResponse;
 

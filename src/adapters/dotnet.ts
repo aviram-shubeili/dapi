@@ -199,8 +199,8 @@ export class DotnetAdapter implements AdapterConfig {
     if (!initialized) {
       return {
         error: `Timeout waiting for vsdbg to attach to PID ${opts.pid}. ` +
-               `Ensure the process is a ${dotnetType === "clr" ? ".NET Framework" : ".NET Core"} process. ` +
-               `Tip: set DOTNET_RUNTIME=coreclr if targeting .NET Core.`,
+          `Ensure the process is a ${dotnetType === "clr" ? ".NET Framework" : ".NET Core"} process. ` +
+          `Tip: set DOTNET_RUNTIME=coreclr if targeting .NET Core.`,
       };
     }
 
@@ -251,7 +251,7 @@ export class DotnetAdapter implements AdapterConfig {
       if (msg.includes("Access is denied")) {
         return {
           error: `Access denied attaching to PID ${opts.pid}. ` +
-                 `Run dapi as Administrator (elevated terminal).`,
+            `Run dapi as Administrator (elevated terminal).`,
         };
       }
       return { error: `Attach failed: ${msg}` };

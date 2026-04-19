@@ -57,6 +57,7 @@ dapi start <script> --break file:line[:condition] [--runtime path] [--break-on-e
 # Attach to a running process
 dapi attach --pid <PID> [--break file:line]     # Inject debugger — no restart needed
 dapi attach [host:]port [--break file:line]     # Connect to existing debug server
+dapi attach --pid <PID> --language dotnet       # .NET process (requires admin on Windows)
 
 # Execution (each returns auto-context automatically)
 dapi step [over|into|out]      # Step; default: over
@@ -117,6 +118,8 @@ No separate `vars`, `stack`, `source` calls needed unless you want them.
 |----------|-----------|---------|-------------|
 | Python | .py | debugpy | Auto-installed on `attach --pid`. Or: `pip install debugpy` |
 | JavaScript/TypeScript | .js/.ts | js-debug | Node.js (auto-installed on first use) |
+| .NET Framework | .cs/.dll | vsdbg | VS Code C# extension (`ms-dotnettools.csharp`) |
+| .NET Core/.NET 5+ | .cs/.dll | vsdbg | VS Code C# extension + `DOTNET_RUNTIME=coreclr` |
 | Go | .go | Delve | `go install github.com/go-delve/delve/cmd/dlv@latest` |
 | Rust/C/C++ | .rs/.c/.cpp | CodeLLDB | `CODELLDB_PATH` env var |
 
@@ -239,3 +242,34 @@ dapi --session worker close
 - `attach --pid` requires lldb (macOS) or gdb (Linux)
 - `--session <name>` runs independent daemons at `~/.dapi/<name>.sock`
 - `output` drains buffered stdout/stderr — auto-context already includes it on each stop
+
+### .NET / Windows Notes
+
+- **Admin required**: Attaching to a .NET process on Windows requires an **elevated (Administrator) terminal**. dapi will block with a clear error if you're not admin — same as Visual Studio.
+- **`--language dotnet`**: Required when attaching to .NET processes. Without it, dapi defaults to Python.
+- **Runtime type**: Defaults to `clr` (.NET Framework). Set `DOTNET_RUNTIME=coreclr` for .NET Core/.NET 5+.
+- **Environment variables**:
+  - `DOTNET_SYMBOL_PATH` — PDB search paths (semicolon-separated)
+  - `DOTNET_SOURCE_PATH` — Source file search paths (semicolon-separated)
+  - `VSDBG_PATH` — Explicit path to vsdbg.exe (auto-detected from VS Code extensions)
+- **Daemon privilege**: If you start dapi without admin and later run from an admin terminal, dapi auto-restarts the daemon with elevated privileges.
+
+### .NET Attach Example
+
+```bash
+# Find the process
+Get-Process MyServer | Select-Object Id
+
+# Attach (admin terminal required)
+$env:DOTNET_SYMBOL_PATH = "D:\path\to\pdbs"
+dapi attach --pid 12345 --language dotnet --break "MyController.cs:42"
+
+# Trigger the endpoint
+curl http://localhost:5000/api/endpoint
+
+# Inspect
+dapi continue       # wait for breakpoint hit
+dapi eval "request.Body"
+dapi stack
+dapi close
+```

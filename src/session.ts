@@ -65,19 +65,19 @@ export class Session {
 
   async handleCommand(cmd: Command): Promise<CommandResult> {
     switch (cmd.action) {
-      case "start":    return this.startSession(cmd);
-      case "attach":   return this.attachSession(cmd);
-      case "vars":     return this.getVariables();
-      case "stack":    return this.getStack();
-      case "eval":     return this.evalExpression(cmd.expression);
-      case "step":     return this.step(cmd.kind ?? "over");
+      case "start": return this.startSession(cmd);
+      case "attach": return this.attachSession(cmd);
+      case "vars": return this.getVariables();
+      case "stack": return this.getStack();
+      case "eval": return this.evalExpression(cmd.expression);
+      case "step": return this.step(cmd.kind ?? "over");
       case "continue": return this.continueExecution();
-      case "break":    return this.setBreakpoint(cmd.file, cmd.line, cmd.condition);
-      case "source":   return this.getSource(cmd.file, cmd.line);
-      case "status":   return this.getStatusAsync();
-      case "output":   return { output: this.drainOutput() };
-      case "context":  return this.getContext();
-      case "close":    return this.close();
+      case "break": return this.setBreakpoint(cmd.file, cmd.line, cmd.condition);
+      case "source": return this.getSource(cmd.file, cmd.line);
+      case "status": return this.getStatusAsync();
+      case "output": return { output: this.drainOutput() };
+      case "context": return this.getContext();
+      case "close": return this.close();
     }
   }
 

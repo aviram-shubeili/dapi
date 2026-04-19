@@ -129,7 +129,7 @@ class Daemon {
     this.session.close().catch(() => { });
     if (this.server) { this.server.close(); this.server = null; }
     try { if (existsSync(SOCKET_PATH)) unlinkSync(SOCKET_PATH); } catch { /* ignore */ }
-    try { if (existsSync(PID_FILE)) unlinkSync(PID_FILE); } catch { /* ignore */ }    try { if (existsSync(PORT_FILE)) unlinkSync(PORT_FILE); } catch { /* ignore */ }    process.exitCode = 0;
+    try { if (existsSync(PID_FILE)) unlinkSync(PID_FILE); } catch { /* ignore */ } try { if (existsSync(PORT_FILE)) unlinkSync(PORT_FILE); } catch { /* ignore */ } process.exitCode = 0;
   }
 }
 
