@@ -1,5 +1,5 @@
 /**
- * Direct test: spawn vsdbg and attach to GfnServlet, bypassing the daemon.
+ * Direct test: spawn vsdbg and attach to a .NET Framework process, bypassing the daemon.
  * Usage: bun run test-attach.ts <PID>
  */
 import { DotnetAdapter } from "./src/adapters/dotnet.js";
@@ -117,5 +117,5 @@ if (threadsResp.success && threadsResp.body) {
 
 console.log("\n[test] Detaching...");
 await client.request("disconnect", { terminateDebuggee: false });
-console.log("[test] Done — GfnServlet continues running.");
+console.log("[test] Done — target process continues running.");
 process.exit(0);
