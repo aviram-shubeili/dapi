@@ -184,10 +184,15 @@ export class DotnetAdapter implements AdapterConfig {
       };
     }
 
-    // Add source path if configured
+    // Add source path mapping if configured.
+    // Maps each path to itself — allows vsdbg to find sources when PDB paths differ.
     const sourcePath = process.env.DOTNET_SOURCE_PATH;
     if (sourcePath) {
-      attachArgs.sourceFileMap = {};
+      const map: Record<string, string> = {};
+      for (const p of sourcePath.split(";").filter(Boolean)) {
+        map[p] = p;
+      }
+      attachArgs.sourceFileMap = map;
     }
 
     // 3. Send attach request (async — response deferred until configurationDone)
